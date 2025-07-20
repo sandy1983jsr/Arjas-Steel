@@ -1,4 +1,3 @@
-# Default thresholds and dashboard colors
 THRESHOLDS = {
     "efficiency_low": 0.65,  # Flag cycles below 65% efficiency
     "shell_temp_high": 120,  # °C, shell overheat
