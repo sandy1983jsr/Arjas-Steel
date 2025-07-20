@@ -1,7 +1,7 @@
 import streamlit as st
 import pandas as pd
 import numpy as np
-import datetime
+import altair as alt
 from heat_balance import *
 from data_loader import *
 from config import THRESHOLDS, DASHBOARD_COLORS
@@ -15,14 +15,12 @@ st.sidebar.header("Step 1: Upload Your Cycle Data (.csv)")
 uploaded_file = st.sidebar.file_uploader("Choose a CSV file", type=["csv"])
 
 if uploaded_file is not None:
-    # Read uploaded CSV directly
     df = pd.read_csv(uploaded_file, parse_dates=['timestamp'])
     st.success("Data uploaded successfully!")
 else:
     st.warning("Please upload a CSV file to continue.")
     st.stop()
 
-# --- rest of your dashboard code below ---
 st.sidebar.header("What-If Analysis & Thresholds")
 st.sidebar.markdown("Set thresholds to trigger alerts:")
 
@@ -67,10 +65,25 @@ if submitted:
     Q_shell = calculate_shell_loss(k, A, t_internal, t_surface, d, eps, sigma, t_ambient)
     eta_stove = calculate_efficiency(Q_blast, Q_fuel, Q_air_comb, Q_flue, Q_shell)
     color = DASHBOARD_COLORS["projection"]
+
     st.markdown(f"<h3 style='color:{color}'>Stove Efficiency: {eta_stove*100:.1f}%</h3>", unsafe_allow_html=True)
-    st.write("Heat Input:", Q_fuel + Q_air_comb)
-    st.write("Useful Heat Delivered:", Q_blast)
-    st.write("Heat Losses (Flue, Shell):", Q_flue, Q_shell)
+
+    result_df = pd.DataFrame({
+        'Metric': ['Heat Input', 'Useful Heat', 'Flue Loss', 'Shell Loss', 'Efficiency'],
+        'Value': [Q_fuel + Q_air_comb, Q_blast, Q_flue, Q_shell, eta_stove*100]
+    })
+
+    bar_chart = alt.Chart(result_df).mark_bar(color=color).encode(
+        x=alt.X('Metric', title='Parameter'),
+        y=alt.Y('Value', title='Value (kJ or %)'),
+        tooltip=['Metric', 'Value']
+    ).properties(
+        width=600,
+        height=300,
+        title="What-If Results"
+    )
+    st.altair_chart(bar_chart, use_container_width=True)
+
     if eta_stove < eff_low:
         st.markdown(f"<span style='color:{DASHBOARD_COLORS['alert']}'>⚠️ Efficiency Below Threshold!</span>", unsafe_allow_html=True)
     if t_surface > shell_high:
@@ -103,7 +116,18 @@ hist["Q_flue"] = Q_flue_hist
 hist["Q_shell"] = Q_shell_hist
 
 color_hist = DASHBOARD_COLORS["historical"]
-st.line_chart(hist.set_index('timestamp')["Efficiency"], color=[color_hist])
+
+eff_chart = alt.Chart(hist).mark_line(color=color_hist).encode(
+    x=alt.X('timestamp:T', title='Cycle Timestamp'),
+    y=alt.Y('Efficiency:Q', title='Stove Efficiency (fraction)'),
+    tooltip=['timestamp', 'Efficiency']
+).properties(
+    width=800,
+    height=350,
+    title="Historical Stove Efficiency per Cycle"
+)
+st.altair_chart(eff_chart, use_container_width=True)
+
 st.dataframe(hist[["timestamp", "Efficiency", "Q_blast", "Q_fuel", "Q_flue", "Q_shell"]])
 
 # KPI Panel
