@@ -2,54 +2,60 @@ import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
 import streamlit as st
+from sklearn.ensemble import RandomForestRegressor
 from sklearn.linear_model import LinearRegression
+from prophet import Prophet
 
-# ---------------------------
-# FUNCTIONS
-# ---------------------------
+# ----------- CONSTANTS -----------
+STEFAN_BOLTZMANN = 5.67e-8  # W/m2.K4
+
+# ----------- FUNCTIONS ------------
 
 def read_data(file):
-    """
-    Reads CSV data uploaded by user.
-    Expected columns: ['Timestamp', 'Shell_Temp', 'Offgas_Temp', 'Coke_Rate', 'Refractory_Thickness']
-    """
     df = pd.read_csv(file, parse_dates=['Timestamp'])
     df.sort_values('Timestamp', inplace=True)
     return df
 
-def calculate_heat_loss(df, shell_area=100, offgas_flow=1000, shell_emissivity=0.8):
+def calculate_shell_heat_loss(df, zones, conductivity_map):
     """
-    Calculates heat loss from shell and offgas.
-    - shell_area: m2 (default typical value, adjust as per plant)
-    - offgas_flow: Nm3/hr (default, adjust as per plant)
-    - shell_emissivity: Emissivity factor (default, typical 0.8)
+    Calculate shell heat loss for each zone (conduction + radiation).
+    zones: list of zone names
+    conductivity_map: dict with zone: conductivity
     """
-    # Constants
-    STEEL_THERMAL_CONDUCTIVITY = 43  # W/mK, typical steel
-    REFRACTORY_THERMAL_CONDUCTIVITY = 2  # W/mK, typical refractory
-    GAS_SPECIFIC_HEAT = 1.02  # kJ/Nm3.K
-
-    # Heat loss from shell (simplified as Q = k*A*ΔT/thickness)
-    df['Shell_Heat_Loss_kW'] = (
-        REFRACTORY_THERMAL_CONDUCTIVITY * shell_area *
-        (df['Shell_Temp'] - 35) / df['Refractory_Thickness']
-    ) / 1000  # W to kW
-
-    # Heat loss via offgas
-    df['Offgas_Heat_Loss_kW'] = (
-        offgas_flow * GAS_SPECIFIC_HEAT * (df['Offgas_Temp'] - 35) / 3600  # per hour to per second
-    )
-
-    # Total Heat Loss
-    df['Total_Heat_Loss_kW'] = df['Shell_Heat_Loss_kW'] + df['Offgas_Heat_Loss_kW']
-
+    results = []
+    for zone in zones:
+        temp_col = f"{zone}_Temp"
+        thick_col = f"{zone}_Thickness"
+        area_col = f"{zone}_Area"
+        emiss_col = f"{zone}_Emissivity"
+        # conduction
+        Q_cond = conductivity_map[zone] * df[area_col] * (df[temp_col] - df['Ambient_Temp']) / df[thick_col]
+        # radiation
+        Q_rad = df[emiss_col] * STEFAN_BOLTZMANN * df[area_col] * (
+            np.power(df[temp_col]+273.15, 4) - np.power(df['Ambient_Temp']+273.15, 4)
+        )
+        results.append(Q_cond + Q_rad)
+    df['Shell_Heat_Loss_kW'] = np.sum(results, axis=0) / 1000  # W to kW
     return df
 
-def correlate_heat_loss_with_coke_rate(df):
+def calculate_offgas_heat_loss(df, gas_cp_map):
     """
-    Fits a regression model between heat loss and coke rate.
-    Returns: Regression model, projected coke rate (future)
+    Calculate sensible heat loss in off-gas (sum across components).
     """
+    Q_gas = 0
+    for gas in gas_cp_map:
+        flow_col = f"{gas}_Flow"  # Nm3/hr
+        temp_col = "Offgas_Temp"  # °C
+        cp = gas_cp_map[gas]      # kJ/Nm3.K
+        Q_gas += df[flow_col] * cp * (df[temp_col] - 25) / 3600  # kW
+    df['Offgas_Heat_Loss_kW'] = Q_gas
+    return df
+
+def build_heat_balance(df):
+    df['Total_Heat_Loss_kW'] = df['Shell_Heat_Loss_kW'] + df['Offgas_Heat_Loss_kW']
+    return df
+
+def correlate_coke_heat(df):
     X = df[['Total_Heat_Loss_kW']]
     y = df['Coke_Rate']
     model = LinearRegression()
@@ -57,90 +63,95 @@ def correlate_heat_loss_with_coke_rate(df):
     df['Predicted_Coke_Rate'] = model.predict(X)
     return model, df
 
-def project_future(df, periods=10):
+def refractory_condition_index(df):
     """
-    Projects heat loss and coke rate for next 'periods' time steps.
-    Uses linear trend based on last N points.
+    Composite indicator: high heat loss/coke rate ratio = possible refractory degradation.
     """
-    # Linear trend on heat loss
-    last = df.tail(15)
-    time_numeric = np.arange(len(last))
-    trend = np.polyfit(time_numeric, last['Total_Heat_Loss_kW'], 1)
-    future_heat_loss = [last['Total_Heat_Loss_kW'].values[-1] + trend[0]*(i+1) for i in range(periods)]
-    # Use model to predict coke rate
-    model = LinearRegression()
-    model.fit(df[['Total_Heat_Loss_kW']], df['Coke_Rate'])
-    future_coke_rate = model.predict(np.array(future_heat_loss).reshape(-1,1))
-    future_time = pd.date_range(df['Timestamp'].iloc[-1], periods=periods+1, freq='H')[1:]
-    future_df = pd.DataFrame({
-        'Timestamp': future_time,
-        'Total_Heat_Loss_kW': future_heat_loss,
-        'Predicted_Coke_Rate': future_coke_rate
-    })
-    return future_df
+    df['HeatLoss_CokeRate_Ratio'] = df['Total_Heat_Loss_kW'] / df['Coke_Rate']
+    # simple normalization
+    idx = (df['HeatLoss_CokeRate_Ratio'] - df['HeatLoss_CokeRate_Ratio'].min()) / \
+          (df['HeatLoss_CokeRate_Ratio'].max() - df['HeatLoss_CokeRate_Ratio'].min())
+    df['Refractory_Index'] = idx
+    return df
 
-def plot_heat_loss_dashboard(df, future_df):
+def prophet_forecast(df, col, periods=24):
     """
-    Plots heat loss graph, historical (grey) and projected (orange).
+    Forecast future values using Prophet.
     """
+    fdf = df[['Timestamp', col]].rename(columns={'Timestamp':'ds', col:'y'})
+    m = Prophet()
+    m.fit(fdf)
+    future = m.make_future_dataframe(periods=periods, freq='H')
+    forecast = m.predict(future)
+    return forecast[['ds', 'yhat']].tail(periods)
+
+def plot_dashboard(df, forecast_df, col, title, ylabel):
     fig, ax = plt.subplots(figsize=(10,5))
-    ax.plot(df['Timestamp'], df['Total_Heat_Loss_kW'], color='grey', label='Heat Loss (Historical)')
-    ax.plot(future_df['Timestamp'], future_df['Total_Heat_Loss_kW'], color='orange', label='Heat Loss (Projected)')
+    # Historical
+    ax.plot(df['Timestamp'], df[col], color='grey', label=f'{title} (Historical)')
+    # Projected
+    ax.plot(forecast_df['ds'], forecast_df['yhat'], color='orange', label=f'{title} (Forecast)')
     ax.set_xlabel('Time')
-    ax.set_ylabel('Heat Loss (kW)')
+    ax.set_ylabel(ylabel)
+    ax.set_title(title)
     ax.legend()
-    ax.set_title('Blast Furnace Heat Loss')
     ax.grid()
     st.pyplot(fig)
 
-def plot_coke_rate_dashboard(df, future_df):
-    """
-    Plots coke rate graph, historical (grey) and projected (orange).
-    """
-    fig, ax = plt.subplots(figsize=(10,5))
-    ax.plot(df['Timestamp'], df['Coke_Rate'], color='grey', label='Coke Rate (Historical)')
-    ax.plot(future_df['Timestamp'], future_df['Predicted_Coke_Rate'], color='orange', label='Coke Rate (Projected)')
-    ax.set_xlabel('Time')
-    ax.set_ylabel('Coke Rate (kg/thm)')
-    ax.legend()
-    ax.set_title('Blast Furnace Coke Rate')
-    ax.grid()
-    st.pyplot(fig)
+# ----------- STREAMLIT UI ------------
 
-# ---------------------------
-# STREAMLIT APP
-# ---------------------------
-
-st.title('Blast Furnace Heat Balance Dashboard - Arjas Steel')
-
+st.title("Blast Furnace Heat Balance & Predictive Dashboard - Arjas Steel")
 st.markdown("""
-Upload your CSV file containing the following columns:
-- Timestamp (date/time)
-- Shell_Temp (C)
-- Offgas_Temp (C)
-- Coke_Rate (kg/thm)
-- Refractory_Thickness (m)
+**Upload CSV with columns like:**
+- Timestamp, Ambient_Temp
+- [Zone]_Temp, [Zone]_Thickness, [Zone]_Area, [Zone]_Emissivity (for each zone, e.g. belly, bosh, hearth)
+- Coke_Rate, Fuel_Injection, Offgas_Temp, CO_Flow, CO2_Flow, CH4_Flow, H2_Flow, N2_Flow (Nm3/hr)
 """)
 
-uploaded_file = st.file_uploader("Upload CSV data", type=['csv'])
-
+uploaded_file = st.file_uploader("Upload CSV Data", type=['csv'])
 if uploaded_file:
+    # Zone segmentation and parameters
+    zones = ['Belly', 'Bosh', 'Hearth']  # customize as per your data
+    conductivity_map = {"Belly":2.0, "Bosh":2.5, "Hearth":3.0}  # W/mK
+    gas_cp_map = {"CO":1.04, "CO2":0.84, "CH4":2.22, "H2":3.42, "N2":1.04}  # kJ/Nm3.K
+    
     df = read_data(uploaded_file)
-    df = calculate_heat_loss(df)
-    _, df = correlate_heat_loss_with_coke_rate(df)
-    future_df = project_future(df, periods=24)
+    df = calculate_shell_heat_loss(df, zones, conductivity_map)
+    df = calculate_offgas_heat_loss(df, gas_cp_map)
+    df = build_heat_balance(df)
+    _, df = correlate_coke_heat(df)
+    df = refractory_condition_index(df)
     
-    st.header("Heat Loss Dashboard")
-    plot_heat_loss_dashboard(df, future_df)
+    # Forecasts
+    shell_forecast = prophet_forecast(df, 'Shell_Heat_Loss_kW', periods=24)
+    offgas_forecast = prophet_forecast(df, 'Offgas_Heat_Loss_kW', periods=24)
+    coke_forecast = prophet_forecast(df, 'Coke_Rate', periods=24)
+    index_forecast = prophet_forecast(df, 'Refractory_Index', periods=24)
     
+    # Dashboards
+    st.header("Shell Heat Loss Dashboard")
+    plot_dashboard(df, shell_forecast, 'Shell_Heat_Loss_kW', "Shell Heat Loss", "kW")
+    st.header("Off-Gas Heat Loss Dashboard")
+    plot_dashboard(df, offgas_forecast, 'Offgas_Heat_Loss_kW', "Off-Gas Heat Loss", "kW")
     st.header("Coke Rate Dashboard")
-    plot_coke_rate_dashboard(df, future_df)
-
-    st.subheader('Projected Data Table')
-    st.dataframe(future_df)
+    plot_dashboard(df, coke_forecast, 'Coke_Rate', "Coke Rate", "kg/thm")
+    st.header("Refractory Condition Index")
+    plot_dashboard(df, index_forecast, 'Refractory_Index', "Refractory Condition Index", "Index (0-1)")
+    
+    st.subheader("Alerts & Thresholds")
+    alert_df = df[df['Refractory_Index'] > 0.85]
+    if not alert_df.empty:
+        st.error(f"⚠️ High Refractory Condition Index: {len(alert_df)} recent entries above threshold! Recommend inspection.")
+        st.dataframe(alert_df[['Timestamp','Refractory_Index','Shell_Heat_Loss_kW','Coke_Rate']])
+    else:
+        st.success("No critical refractory alerts in recent data.")
+    
+    st.subheader("Projected Data Table (Next 24 Hours)")
+    st.dataframe(shell_forecast.rename(columns={'ds':'Timestamp','yhat':'Shell_Heat_Loss_kW'}))
 else:
     st.info("Please upload CSV file to proceed.")
 
 st.markdown("""
-**Note:** For DCS connectivity, implement a data ingestion layer that fetches data from your DCS historian and formats it as per the required columns. This code can easily be adapted for such real-time input.
+**Note:** For real-time DCS/OPC UA integration, replace the CSV section with appropriate data feed logic.  
+**ML models (Random Forest, LSTM) can be plugged in for more advanced predictions as data volume increases.**
 """)
