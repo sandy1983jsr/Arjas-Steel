@@ -6,14 +6,23 @@ from heat_balance import *
 from data_loader import *
 from config import THRESHOLDS, DASHBOARD_COLORS
 
-# Load data
-DATA_PATH = "sample_data.csv"
-df = load_cycle_data(DATA_PATH)
-
 st.set_page_config(page_title="Hot Blast Stove Heat Balance", layout="wide")
 
 st.title("🔥 Hot Blast Stove Heat Balance Dashboard")
 
+# --- File Upload UI ---
+st.sidebar.header("Step 1: Upload Your Cycle Data (.csv)")
+uploaded_file = st.sidebar.file_uploader("Choose a CSV file", type=["csv"])
+
+if uploaded_file is not None:
+    # Read uploaded CSV directly
+    df = pd.read_csv(uploaded_file, parse_dates=['timestamp'])
+    st.success("Data uploaded successfully!")
+else:
+    st.warning("Please upload a CSV file to continue.")
+    st.stop()
+
+# --- rest of your dashboard code below ---
 st.sidebar.header("What-If Analysis & Thresholds")
 st.sidebar.markdown("Set thresholds to trigger alerts:")
 
