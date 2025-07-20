@@ -1,0 +1,115 @@
+import streamlit as st
+import pandas as pd
+import numpy as np
+import datetime
+from heat_balance import *
+from data_loader import *
+from config import THRESHOLDS, DASHBOARD_COLORS
+
+# Load data
+DATA_PATH = "sample_data.csv"
+df = load_cycle_data(DATA_PATH)
+
+st.set_page_config(page_title="Hot Blast Stove Heat Balance", layout="wide")
+
+st.title("🔥 Hot Blast Stove Heat Balance Dashboard")
+
+st.sidebar.header("What-If Analysis & Thresholds")
+st.sidebar.markdown("Set thresholds to trigger alerts:")
+
+eff_low = st.sidebar.slider("Efficiency Alert Threshold (%)", 40, 90, int(THRESHOLDS["efficiency_low"]*100))/100
+shell_high = st.sidebar.slider("Shell Temp Alert (°C)", 80, 200, int(THRESHOLDS["shell_temp_high"]))
+cycle_long = st.sidebar.slider("Long Cycle Duration (min)", 60, 300, int(THRESHOLDS["cycle_duration_long"]))
+
+st.sidebar.header("What-If Inputs")
+stove_select = st.sidebar.selectbox("Stove ID", sorted(df['stove_id'].unique()))
+latest = get_latest_cycle(df, stove_select)
+
+# What-if user inputs
+st.markdown("## 🟧 Projections (Orange) – Current Cycle / What-If")
+with st.form("whatif_form"):
+    st.write("Modify values for what-if analysis:")
+    m_fuel = st.number_input("Fuel Flow Rate (Nm³/hr)", value=float(latest["m_fuel"]), min_value=0.0)
+    cv_fuel = st.number_input("Fuel Calorific Value (MJ/Nm³)", value=float(latest["cv_fuel"]), min_value=0.0)
+    eta_comb = st.number_input("Combustion Efficiency", value=float(latest["eta_combustion"]), min_value=0.0, max_value=1.0)
+    m_air = st.number_input("Blast Air Flow Rate (kg/hr)", value=float(latest["m_air"]), min_value=0.0)
+    t_hot_blast = st.number_input("Hot Blast Temp (°C)", value=float(latest["t_hot_blast"]), min_value=0.0)
+    t_ambient = st.number_input("Ambient Temp (°C)", value=float(latest["t_ambient"]), min_value=0.0)
+    m_flue = st.number_input("Flue Gas Flow (kg/hr)", value=float(latest["m_flue"]), min_value=0.0)
+    t_flue = st.number_input("Flue Gas Temp (°C)", value=float(latest["t_flue"]), min_value=0.0)
+    t_ref = st.number_input("Flue Gas Ref Temp (°C)", value=float(latest["t_ref"]), min_value=0.0)
+    k = st.number_input("Shell Conductivity (W/mK)", value=float(latest["k"]), min_value=0.0)
+    A = st.number_input("Shell Area (m²)", value=float(latest["A"]), min_value=0.0)
+    t_internal = st.number_input("Internal Temp (°C)", value=float(latest["t_internal"]), min_value=0.0)
+    t_surface = st.number_input("Shell Surface Temp (°C)", value=float(latest["t_surface"]), min_value=0.0)
+    d = st.number_input("Shell Thickness (m)", value=float(latest["d"]), min_value=0.01)
+    eps = st.number_input("Shell Emissivity", value=float(latest["eps"]), min_value=0.0, max_value=1.0)
+    sigma = float(latest["sigma"])
+    m_air_comb = st.number_input("Combustion Air Flow (kg/hr)", value=float(latest["m_air_comb"]), min_value=0.0)
+    t_air_comb = st.number_input("Combustion Air Temp (°C)", value=float(latest["t_air_comb"]), min_value=0.0)
+    cp_air = float(latest["cp_air"])
+    cp_flue = float(latest["cp_flue"])
+    submitted = st.form_submit_button("Run What-If")
+
+if submitted:
+    Q_fuel, Q_air_comb = calculate_heat_input(m_fuel, cv_fuel, eta_comb, m_air_comb, cp_air, t_air_comb, t_ambient)
+    Q_blast = calculate_heat_output(m_air, cp_air, t_hot_blast, t_ambient)
+    Q_flue = calculate_flue_loss(m_flue, cp_flue, t_flue, t_ref)
+    Q_shell = calculate_shell_loss(k, A, t_internal, t_surface, d, eps, sigma, t_ambient)
+    eta_stove = calculate_efficiency(Q_blast, Q_fuel, Q_air_comb, Q_flue, Q_shell)
+    color = DASHBOARD_COLORS["projection"]
+    st.markdown(f"<h3 style='color:{color}'>Stove Efficiency: {eta_stove*100:.1f}%</h3>", unsafe_allow_html=True)
+    st.write("Heat Input:", Q_fuel + Q_air_comb)
+    st.write("Useful Heat Delivered:", Q_blast)
+    st.write("Heat Losses (Flue, Shell):", Q_flue, Q_shell)
+    if eta_stove < eff_low:
+        st.markdown(f"<span style='color:{DASHBOARD_COLORS['alert']}'>⚠️ Efficiency Below Threshold!</span>", unsafe_allow_html=True)
+    if t_surface > shell_high:
+        st.markdown(f"<span style='color:{DASHBOARD_COLORS['alert']}'>⚠️ Shell Overheat!</span>", unsafe_allow_html=True)
+else:
+    st.info("Run what-if to see updated projections.")
+
+# Historical Dashboard (Grey)
+st.markdown("## 🩶 Historical Cycles (Grey) – Trend & Breakdown")
+hist = get_historical_data(df, stove_select)
+Q_fuel_hist, Q_air_comb_hist, Q_blast_hist, Q_flue_hist, Q_shell_hist, eta_hist = [], [], [], [], [], []
+for _, row in hist.iterrows():
+    Qf, Qac = calculate_heat_input(row["m_fuel"], row["cv_fuel"], row["eta_combustion"], row["m_air_comb"], row["cp_air"], row["t_air_comb"], row["t_ambient"])
+    Qb = calculate_heat_output(row["m_air"], row["cp_air"], row["t_hot_blast"], row["t_ambient"])
+    Qfl = calculate_flue_loss(row["m_flue"], row["cp_flue"], row["t_flue"], row["t_ref"])
+    Qsh = calculate_shell_loss(row["k"], row["A"], row["t_internal"], row["t_surface"], row["d"], row["eps"], row["sigma"], row["t_ambient"])
+    et = calculate_efficiency(Qb, Qf, Qac, Qfl, Qsh)
+    Q_fuel_hist.append(Qf)
+    Q_air_comb_hist.append(Qac)
+    Q_blast_hist.append(Qb)
+    Q_flue_hist.append(Qfl)
+    Q_shell_hist.append(Qsh)
+    eta_hist.append(et)
+
+hist["Efficiency"] = eta_hist
+hist["Q_fuel"] = Q_fuel_hist
+hist["Q_air_comb"] = Q_air_comb_hist
+hist["Q_blast"] = Q_blast_hist
+hist["Q_flue"] = Q_flue_hist
+hist["Q_shell"] = Q_shell_hist
+
+color_hist = DASHBOARD_COLORS["historical"]
+st.line_chart(hist.set_index('timestamp')["Efficiency"], color=[color_hist])
+st.dataframe(hist[["timestamp", "Efficiency", "Q_blast", "Q_fuel", "Q_flue", "Q_shell"]])
+
+# KPI Panel
+st.markdown("## 📊 KPIs & Alerts")
+st.metric("Latest Efficiency (%)", f"{hist['Efficiency'].iloc[-1]*100:.1f}")
+st.metric("Fuel Consumption (Nm³)", f"{hist['m_fuel'].iloc[-1]:.1f}")
+st.metric("Hot Blast Output per Fuel Unit", f"{hist['Q_blast'].iloc[-1]/hist['Q_fuel'].iloc[-1]:.2f}")
+st.metric("Shell Temp (°C)", f"{hist['t_surface'].iloc[-1]:.1f}")
+
+if hist["Efficiency"].iloc[-1] < eff_low:
+    st.markdown(f"<span style='color:{DASHBOARD_COLORS['alert']}'>⚠️ Latest Cycle Efficiency Below Threshold!</span>", unsafe_allow_html=True)
+if hist["t_surface"].iloc[-1] > shell_high:
+    st.markdown(f"<span style='color:{DASHBOARD_COLORS['alert']}'>⚠️ Shell Overheat Alert!</span>", unsafe_allow_html=True)
+
+# Condition Index
+st.markdown("## 🟠 Condition Index (Chequered Brick Health)")
+cond_index = get_condition_index(hist["Efficiency"].tolist())
+st.metric("Condition Index (Rolling Mean)", f"{cond_index*100:.1f}")
