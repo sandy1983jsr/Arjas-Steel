@@ -100,19 +100,57 @@ if 'df' in locals():
     
     with tab1:
         st.subheader("Heat Loss Trend")
-        st.line_chart(df[['shell_heat_loss_kW', 'off_gas_heat_loss_kW']])
+        fig, ax = plt.subplots(figsize=(10, 6))
+        # Historical data in grey
+        ax.plot(df.index, df['shell_heat_loss_kW'], label='Shell Heat Loss', color='grey', linewidth=2)
+        ax.plot(df.index, df['off_gas_heat_loss_kW'], label='Off-Gas Heat Loss', color='darkgrey', linewidth=2)
+        ax.set_xlabel('Time Index')
+        ax.set_ylabel('Heat Loss (kW)')
+        ax.set_title('Heat Loss Trend Over Time')
+        ax.legend()
+        ax.grid(True, alpha=0.3)
+        st.pyplot(fig)
+        plt.close()
     
     with tab2:
         st.subheader("Coke Rate: Actual vs Predicted")
-        st.line_chart(df[['coke_rate', 'coke_rate_pred']])
+        fig, ax = plt.subplots(figsize=(10, 6))
+        # Historical data in grey, predicted in orange
+        ax.plot(df.index, df['coke_rate'], label='Actual Coke Rate (Historical)', color='grey', linewidth=2)
+        ax.plot(df.index, df['coke_rate_pred'], label='Predicted Coke Rate', color='orange', linewidth=2)
+        ax.set_xlabel('Time Index')
+        ax.set_ylabel('Coke Rate (kg/ton)')
+        ax.set_title('Coke Rate: Actual vs Predicted')
+        ax.legend()
+        ax.grid(True, alpha=0.3)
+        st.pyplot(fig)
+        plt.close()
     
     with tab3:
         st.subheader("Heat Loss / Coke Rate Ratio")
-        st.line_chart(df['heat_loss_coke_ratio'])
+        fig, ax = plt.subplots(figsize=(10, 6))
+        # Historical data in grey
+        ax.plot(df.index, df['heat_loss_coke_ratio'], label='Heat Loss/Coke Ratio', color='grey', linewidth=2)
+        ax.set_xlabel('Time Index')
+        ax.set_ylabel('Heat Loss / Coke Rate Ratio')
+        ax.set_title('Heat Loss to Coke Rate Ratio Over Time')
+        ax.legend()
+        ax.grid(True, alpha=0.3)
+        st.pyplot(fig)
+        plt.close()
     
     with tab4:
         st.subheader("Refractory Condition Index")
-        st.line_chart(df['refractory_condition_index'])
+        fig, ax = plt.subplots(figsize=(10, 6))
+        # Calculated data in grey
+        ax.plot(df.index, df['refractory_condition_index'], label='Refractory Condition Index', color='grey', linewidth=2)
+        ax.set_xlabel('Time Index')
+        ax.set_ylabel('Refractory Condition Index')
+        ax.set_title('Refractory Condition Index Over Time')
+        ax.legend()
+        ax.grid(True, alpha=0.3)
+        st.pyplot(fig)
+        plt.close()
     
     st.markdown("### Data Table (Last 10 rows)")
     st.dataframe(df.tail(10))
