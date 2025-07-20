@@ -79,29 +79,33 @@ def project_future(df, periods=10):
     })
     return future_df
 
-def plot_dashboard(df, future_df):
+def plot_heat_loss_dashboard(df, future_df):
     """
-    Plots historical (grey) and projected (orange) lines for heat loss and coke rate.
+    Plots heat loss graph, historical (grey) and projected (orange).
     """
-    fig, ax1 = plt.subplots(figsize=(12,6))
-
-    # Historical
-    ax1.plot(df['Timestamp'], df['Total_Heat_Loss_kW'], color='grey', label='Heat Loss (Historical)')
-    ax1.plot(df['Timestamp'], df['Coke_Rate'], color='dimgrey', linestyle='--', label='Coke Rate (Historical)')
-
-    # Projected
-    ax1.plot(future_df['Timestamp'], future_df['Total_Heat_Loss_kW'], color='orange', label='Heat Loss (Projected)')
-    ax1.plot(future_df['Timestamp'], future_df['Predicted_Coke_Rate'], color='darkorange', linestyle='--', label='Coke Rate (Projected)')
-
-    ax1.set_xlabel('Time')
-    ax1.set_ylabel('kW / Coke Rate')
-    ax1.legend()
-    ax1.grid()
+    fig, ax = plt.subplots(figsize=(10,5))
+    ax.plot(df['Timestamp'], df['Total_Heat_Loss_kW'], color='grey', label='Heat Loss (Historical)')
+    ax.plot(future_df['Timestamp'], future_df['Total_Heat_Loss_kW'], color='orange', label='Heat Loss (Projected)')
+    ax.set_xlabel('Time')
+    ax.set_ylabel('Heat Loss (kW)')
+    ax.legend()
+    ax.set_title('Blast Furnace Heat Loss')
+    ax.grid()
     st.pyplot(fig)
 
-    # Table of projection
-    st.subheader('Projected Data')
-    st.dataframe(future_df)
+def plot_coke_rate_dashboard(df, future_df):
+    """
+    Plots coke rate graph, historical (grey) and projected (orange).
+    """
+    fig, ax = plt.subplots(figsize=(10,5))
+    ax.plot(df['Timestamp'], df['Coke_Rate'], color='grey', label='Coke Rate (Historical)')
+    ax.plot(future_df['Timestamp'], future_df['Predicted_Coke_Rate'], color='orange', label='Coke Rate (Projected)')
+    ax.set_xlabel('Time')
+    ax.set_ylabel('Coke Rate (kg/thm)')
+    ax.legend()
+    ax.set_title('Blast Furnace Coke Rate')
+    ax.grid()
+    st.pyplot(fig)
 
 # ---------------------------
 # STREAMLIT APP
@@ -125,7 +129,15 @@ if uploaded_file:
     df = calculate_heat_loss(df)
     _, df = correlate_heat_loss_with_coke_rate(df)
     future_df = project_future(df, periods=24)
-    plot_dashboard(df, future_df)
+    
+    st.header("Heat Loss Dashboard")
+    plot_heat_loss_dashboard(df, future_df)
+    
+    st.header("Coke Rate Dashboard")
+    plot_coke_rate_dashboard(df, future_df)
+
+    st.subheader('Projected Data Table')
+    st.dataframe(future_df)
 else:
     st.info("Please upload CSV file to proceed.")
 
